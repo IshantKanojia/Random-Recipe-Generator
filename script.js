@@ -1,5 +1,5 @@
-// API endpoint to get a random recipe
-const API_URL = 'https://www.themealdb.com/api/json/v1/1/random.php';
+// TheMealDB API Base URL
+const BASE_API_URL = 'https://www.themealdb.com/api/json/v1/1/';
 // API endpoint for ingredient images
 const INGREDIENT_IMG_URL = 'https://www.themealdb.com/images/ingredients/';
 
@@ -15,31 +15,75 @@ const youtubeLinkEl = document.getElementById('youtube-link');
 const copyBtnEl = document.getElementById('copy-btn');
 const messageBox = document.getElementById('message-box');
 const messageText = document.getElementById('message-text');
+// NEW: Reference to the dietary preference dropdown
+const dietPreferenceEl = document.getElementById('diet-preference');
 
 // Store the last fetched meal data
 let currentMealData = null;
 
 /**
- * Fetches a random recipe from the API and updates the UI.
+ * Fetches a random recipe from the API and updates the UI, now supporting dietary filters.
  */
 const fetchRandomRecipe = async () => {
     // Show loading spinner and hide recipe card
     loadingSpinner.classList.remove('hidden');
     recipeCard.classList.add('hidden');
 
-    try {
-        // Fetch data from the API
-        const response = await fetch(API_URL);
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
+    // Get the selected preference
+    const preference = dietPreferenceEl.value;
+    let recipeData = null;
 
-        // Check if a meal was returned
-        if (data.meals && data.meals.length > 0) {
-            const meal = data.meals[0];
-            currentMealData = meal;
-            updateUI(meal);
+    try {
+        if (preference === 'random') {
+            // Case 1: Original random recipe fetch (random.php)
+            const response = await fetch(`${BASE_API_URL}random.php`);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const data = await response.json();
+            
+            if (data.meals && data.meals.length > 0) {
+                recipeData = data.meals[0];
+            }
+
+        } else {
+            // Case 2: Filtered recipe fetch (filter.php then lookup.php)
+
+            // Step 1: Filter meals by the selected category (e.g., 'Vegetarian' or 'Chicken')
+            const filterUrl = `${BASE_API_URL}filter.php?c=${preference}`;
+            const filterResponse = await fetch(filterUrl);
+            
+            if (!filterResponse.ok) throw new Error(`Filter HTTP error! status: ${filterResponse.status}`);
+            const filterData = await filterResponse.json();
+
+            if (!filterData.meals || filterData.meals.length === 0) {
+                // If filter returns null, display an error
+                displayError(`No ${preference} recipes found. Please try 'Any Recipe'.`);
+                return;
+            }
+
+            // Step 2: Select a random meal ID from the filtered list
+            const mealsList = filterData.meals;
+            const randomIndex = Math.floor(Math.random() * mealsList.length);
+            const mealId = mealsList[randomIndex].idMeal;
+
+            // Step 3: Lookup full details for the random meal ID
+            const lookupUrl = `${BASE_API_URL}lookup.php?i=${mealId}`;
+            const lookupResponse = await fetch(lookupUrl);
+
+            if (!lookupResponse.ok) throw new Error(`Lookup HTTP error! status: ${lookupResponse.status}`);
+            const lookupData = await lookupResponse.json();
+
+            if (lookupData.meals && lookupData.meals.length > 0) {
+                recipeData = lookupData.meals[0];
+            } else {
+                displayError('Could not retrieve full recipe details. Please try again.');
+                return;
+            }
+        }
+        
+        // Final check and UI update
+        if (recipeData) {
+            currentMealData = recipeData;
+            updateUI(recipeData);
         } else {
             displayError('No recipe found. Please try again.');
         }
@@ -65,76 +109,64 @@ const updateUI = (meal) => {
 
     // Clear previous ingredients
     ingredientsListEl.innerHTML = '';
+
     // Hide action buttons initially
     youtubeLinkEl.classList.add('hidden');
     copyBtnEl.classList.add('hidden');
 
     // Populate ingredients list
-    // The API provides ingredients and measures in separate, numbered fields (strIngredient1-20, strMeasure1-20)
-    let ingredientsContent = '';
     for (let i = 1; i <= 20; i++) {
         const ingredient = meal[`strIngredient${i}`];
         const measure = meal[`strMeasure${i}`];
 
-        // Stop if the ingredient is null or an empty string
-        if (ingredient && ingredient.trim() !== '') {
+        // Check if ingredient and measure exist and are not empty
+        if (ingredient && ingredient.trim() !== '' && measure && measure.trim() !== '') {
             const listItem = document.createElement('li');
-            listItem.classList.add('flex', 'items-center', 'space-x-3', 'text-lg');
+            listItem.classList.add('flex', 'items-start');
 
-            // Create image element for the ingredient
-            const ingredientImage = document.createElement('img');
-            ingredientImage.src = `${INGREDIENT_IMG_URL}${ingredient.replace(/\s/g, '%20')}-Small.png`;
-            ingredientImage.alt = ingredient;
-            ingredientImage.classList.add('w-8', 'h-8', 'rounded-full', 'border', 'border-gray-500', 'flex-shrink-0');
-            ingredientImage.onerror = function() {
-                this.src = 'https://placehold.co/32x32/374151/D1D5DB?text=%3F';
-            };
-            
-            const ingredientTextSpan = document.createElement('span');
-            const ingredientText = `${measure} ${ingredient}`;
-            ingredientTextSpan.textContent = ingredientText;
-            ingredientTextSpan.classList.add('text-gray-300');
+            // Ingredient image (optional, based on API availability)
+            const img = document.createElement('img');
+            img.src = `${INGREDIENT_IMG_URL}${ingredient.replace(/ /g, '%20')}.png`;
+            img.alt = ingredient;
+            img.classList.add('w-8', 'h-8', 'object-contain', 'mr-3', 'flex-shrink-0');
 
-            listItem.appendChild(ingredientImage);
-            listItem.appendChild(ingredientTextSpan);
+            // Text content
+            const textSpan = document.createElement('span');
+            textSpan.innerHTML = `<span class="font-semibold text-white">${measure}</span> of ${ingredient}`;
+            textSpan.classList.add('flex-grow');
+
+            listItem.appendChild(img);
+            listItem.appendChild(textSpan);
             ingredientsListEl.appendChild(listItem);
-            
-            ingredientsContent += `- ${ingredientText}\n`;
+
+            // Show action buttons if at least one ingredient is found
+            youtubeLinkEl.classList.remove('hidden');
+            copyBtnEl.classList.remove('hidden');
         }
     }
 
     // Set instructions
-    mealInstructionsEl.textContent = meal.strInstructions;
+    // Replaces newlines with paragraph tags for better formatting on the UI
+    const instructions = meal.strInstructions ? meal.strInstructions.trim().split('\n').map(p => `<p class="mb-4">${p}</p>`).join('') : '<p>Instructions not available.</p>';
+    mealInstructionsEl.innerHTML = instructions;
 
-    // Show copy button if there are ingredients
-    if (ingredientsContent !== '') {
-        copyBtnEl.classList.remove('hidden');
-    }
-
-    // Show YouTube link if available
+    // Set YouTube link
     if (meal.strYoutube && meal.strYoutube.trim() !== '') {
         youtubeLinkEl.href = meal.strYoutube;
         youtubeLinkEl.classList.remove('hidden');
+    } else {
+        youtubeLinkEl.classList.add('hidden');
     }
 };
 
-/**
- * Displays a temporary notification message to the user.
- * @param {string} message The message to display.
- */
-const showMessage = (message) => {
-    messageText.textContent = message;
-    messageBox.classList.remove('hidden');
-    setTimeout(() => {
-        messageBox.classList.add('hidden');
-    }, 3000);
-};
 
 /**
  * Copies the ingredients list to the clipboard.
  */
 const copyIngredients = () => {
-    let ingredientsText = 'Ingredients:\n';
+    if (!currentMealData) return;
+
+    let ingredientsText = '--- Ingredients List ---\n';
     const ingredientsItems = ingredientsListEl.getElementsByTagName('li');
     for (let i = 0; i < ingredientsItems.length; i++) {
         // Get the text content, excluding the image alt text
@@ -158,6 +190,30 @@ const copyIngredients = () => {
     showMessage('Ingredients copied to clipboard!');
 };
 
+
+/**
+ * Displays a temporary message box.
+ * @param {string} message The message to display.
+ */
+const showMessage = (message) => {
+    messageText.textContent = message;
+    messageBox.classList.remove('hidden');
+    messageBox.classList.add('animate-fadeIn'); // Assuming you have a CSS fade-in animation
+
+    // Hide after 3 seconds
+    setTimeout(() => {
+        messageBox.classList.remove('animate-fadeIn');
+        messageBox.classList.add('animate-fadeOut'); // Assuming you have a CSS fade-out animation
+        
+        // Wait for fade-out animation to finish before hiding
+        setTimeout(() => {
+            messageBox.classList.remove('animate-fadeOut');
+            messageBox.classList.add('hidden');
+        }, 500); // Wait for animation duration
+    }, 3000);
+};
+
+
 /**
  * Displays an error message on the UI.
  * @param {string} message The error message to display.
@@ -171,9 +227,12 @@ const displayError = (message) => {
     copyBtnEl.classList.add('hidden');
 };
 
+
 // Add event listeners
 getRecipeBtn.addEventListener('click', fetchRandomRecipe);
 copyBtnEl.addEventListener('click', copyIngredients);
+// We also want to fetch a new recipe whenever the user changes the diet preference
+dietPreferenceEl.addEventListener('change', fetchRandomRecipe); 
 
 // Fetch a recipe on page load
-window.onload = fetchRandomRecipe;
+fetchRandomRecipe();
