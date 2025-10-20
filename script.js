@@ -15,27 +15,32 @@ const youtubeLinkEl = document.getElementById('youtube-link');
 const copyBtnEl = document.getElementById('copy-btn');
 const messageBox = document.getElementById('message-box');
 const messageText = document.getElementById('message-text');
-// NEW: Reference to the dietary preference dropdown
 const dietPreferenceEl = document.getElementById('diet-preference');
 
 // Store the last fetched meal data
 let currentMealData = null;
 
+// NEW: Cache for recently viewed meal IDs to prevent frequent repeats.
+// The Set will store meal IDs (strings) that have been shown recently.
+const viewedMealIds = new Set();
+const MAX_CACHE_SIZE = 10; // Only remember the last 10 unique meals
+
 /**
- * Fetches a random recipe from the API and updates the UI, now supporting dietary filters.
+ * Fetches a random recipe from the API and updates the UI, now supporting dietary filters and anti-repetition.
  */
 const fetchRandomRecipe = async () => {
     // Show loading spinner and hide recipe card
     loadingSpinner.classList.remove('hidden');
     recipeCard.classList.add('hidden');
 
-    // Get the selected preference
     const preference = dietPreferenceEl.value;
     let recipeData = null;
+    let mealId = null;
 
     try {
         if (preference === 'random') {
-            // Case 1: Original random recipe fetch (random.php)
+            // Case 1: Original random recipe fetch (random.php) - Cannot use cache easily here, 
+            // as 'random.php' returns only one meal, so we accept occasional repeats for true randomness.
             const response = await fetch(`${BASE_API_URL}random.php`);
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const data = await response.json();
@@ -46,6 +51,7 @@ const fetchRandomRecipe = async () => {
 
         } else {
             // Case 2: Filtered recipe fetch (filter.php then lookup.php)
+            // This is where the anti-repetition logic is essential.
 
             // Step 1: Filter meals by the selected category (e.g., 'Vegetarian' or 'Chicken')
             const filterUrl = `${BASE_API_URL}filter.php?c=${preference}`;
@@ -55,15 +61,33 @@ const fetchRandomRecipe = async () => {
             const filterData = await filterResponse.json();
 
             if (!filterData.meals || filterData.meals.length === 0) {
-                // If filter returns null, display an error
                 displayError(`No ${preference} recipes found. Please try 'Any Recipe'.`);
                 return;
             }
 
-            // Step 2: Select a random meal ID from the filtered list
+            // Step 2: Select a random, *non-repeated* meal ID from the filtered list
             const mealsList = filterData.meals;
-            const randomIndex = Math.floor(Math.random() * mealsList.length);
-            const mealId = mealsList[randomIndex].idMeal;
+            let attemptCount = 0;
+            const maxAttempts = 5; // Limit attempts to prevent infinite loops if the list is tiny/all cached
+
+            while (mealId === null && attemptCount < maxAttempts) {
+                const randomIndex = Math.floor(Math.random() * mealsList.length);
+                const candidateId = mealsList[randomIndex].idMeal;
+
+                if (!viewedMealIds.has(candidateId)) {
+                    // Found a new, unseen meal ID
+                    mealId = candidateId;
+                }
+                attemptCount++;
+            }
+            
+            // Fallback: If after maxAttempts we can't find a new one (i.e., we've seen everything), clear the cache and pick one
+            if (mealId === null) {
+                console.warn('All filtered meals have been seen recently. Clearing cache to force a new selection.');
+                viewedMealIds.clear();
+                const randomIndex = Math.floor(Math.random() * mealsList.length);
+                mealId = mealsList[randomIndex].idMeal;
+            }
 
             // Step 3: Lookup full details for the random meal ID
             const lookupUrl = `${BASE_API_URL}lookup.php?i=${mealId}`;
@@ -74,6 +98,14 @@ const fetchRandomRecipe = async () => {
 
             if (lookupData.meals && lookupData.meals.length > 0) {
                 recipeData = lookupData.meals[0];
+                
+                // Add the newly shown meal ID to the cache
+                if (viewedMealIds.size >= MAX_CACHE_SIZE) {
+                    // Remove the oldest entry (the first one added) to make space
+                    viewedMealIds.delete(viewedMealIds.values().next().value);
+                }
+                viewedMealIds.add(mealId);
+
             } else {
                 displayError('Could not retrieve full recipe details. Please try again.');
                 return;
@@ -198,18 +230,20 @@ const copyIngredients = () => {
 const showMessage = (message) => {
     messageText.textContent = message;
     messageBox.classList.remove('hidden');
-    messageBox.classList.add('animate-fadeIn'); // Assuming you have a CSS fade-in animation
+    // NOTE: You'll need to define 'animate-fadeIn' and 'animate-fadeOut' in your CSS or Tailwind config 
+    // if you want the smooth animation effect. This assumes a basic fade/slide effect.
+    messageBox.classList.add('opacity-100', 'transition-opacity'); 
 
     // Hide after 3 seconds
     setTimeout(() => {
-        messageBox.classList.remove('animate-fadeIn');
-        messageBox.classList.add('animate-fadeOut'); // Assuming you have a CSS fade-out animation
+        messageBox.classList.remove('opacity-100');
+        messageBox.classList.add('opacity-0');
         
-        // Wait for fade-out animation to finish before hiding
+        // Wait for transition before fully hiding the element
         setTimeout(() => {
-            messageBox.classList.remove('animate-fadeOut');
             messageBox.classList.add('hidden');
-        }, 500); // Wait for animation duration
+            messageBox.classList.remove('opacity-0', 'transition-opacity');
+        }, 500); 
     }, 3000);
 };
 
@@ -231,8 +265,8 @@ const displayError = (message) => {
 // Add event listeners
 getRecipeBtn.addEventListener('click', fetchRandomRecipe);
 copyBtnEl.addEventListener('click', copyIngredients);
-// We also want to fetch a new recipe whenever the user changes the diet preference
-dietPreferenceEl.addEventListener('change', fetchRandomRecipe); 
+// When a filter changes, clear the cache to ensure we start a fresh search
+dietPreferenceEl.addEventListener('change', () => { viewedMealIds.clear(); fetchRandomRecipe(); }); 
 
 // Fetch a recipe on page load
 fetchRandomRecipe();
