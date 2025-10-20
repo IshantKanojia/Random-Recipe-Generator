@@ -16,10 +16,14 @@ const copyBtnEl = document.getElementById('copy-btn');
 const messageBox = document.getElementById('message-box');
 const messageText = document.getElementById('message-text');
 const dietPreferenceEl = document.getElementById('diet-preference');
-const countryPreferenceEl = document.getElementById('country-preference'); // NEW ELEMENT
+const countryPreferenceEl = document.getElementById('country-preference');
 
 // Store the last fetched meal data
 let currentMealData = null;
+
+// NEW: Cache for recently viewed meal IDs to prevent frequent repeats
+const viewedMealIds = new Set();
+const MAX_CACHE_SIZE = 10; // Only remember the last 10 unique meals
 
 /**
  * Fetches the list of all available meal areas (countries/cuisines) and populates the dropdown.
@@ -40,33 +44,35 @@ const populateCountryDropdown = async () => {
         }
     } catch (error) {
         console.error('Failed to populate country dropdown:', error);
-        // Display a small message or log the error, but don't halt the app
     }
 };
 
 /**
- * Determines the API URL based on user selections.
- * Note: TheMealDB free API only allows ONE filter (Category OR Area) OR a Random call.
- * We prioritize the most restrictive filter: Diet Category first, then Country.
- * If both are set, we currently only use the Diet Category (c=) to ensure the veg/non-veg choice is respected.
- * If you need both filters, you would need a more complex, multi-step search or a different API.
- * * @param {string} diet The selected dietary preference ('Any', 'Vegetarian', 'Chicken').
- * @param {string} country The selected country/area ('Any', 'Canadian', etc.).
- * @returns {string} The constructed API filter URL.
+ * Determines the API URL based on user selections, prioritizing Diet.
+ * @returns {object} The filter URL and the type of filter being applied.
  */
-const getFilterUrl = (diet, country) => {
-    const isDietFiltered = (diet !== 'Any');
-    const isCountryFiltered = (country !== 'Any');
+const getFilterData = () => {
+    const diet = dietPreferenceEl.value;
+    const country = countryPreferenceEl.value;
 
-    if (isDietFiltered) {
-        // Prioritize Diet filtering as it's the core new feature
-        return `${BASE_API_URL}filter.php?c=${diet}`;
-    } else if (isCountryFiltered) {
-        // Fallback to Country filtering if only country is selected
-        return `${BASE_API_URL}filter.php?a=${country}`;
+    if (diet !== 'Any') {
+        return {
+            url: `${BASE_API_URL}filter.php?c=${diet}`,
+            type: 'category',
+            value: diet
+        };
+    } else if (country !== 'Any') {
+        return {
+            url: `${BASE_API_URL}filter.php?a=${country}`,
+            type: 'cuisine',
+            value: country
+        };
     } else {
-        // Default to a completely random meal
-        return `${BASE_API_URL}random.php`;
+        return {
+            url: `${BASE_API_URL}random.php`,
+            type: 'random',
+            value: 'Any'
+        };
     }
 }
 
@@ -79,16 +85,13 @@ const fetchRandomRecipe = async () => {
     loadingSpinner.classList.remove('hidden');
     recipeCard.classList.add('hidden');
 
-    const dietPreference = dietPreferenceEl.value;
-    const countryPreference = countryPreferenceEl.value;
-    const filterUrl = getFilterUrl(dietPreference, countryPreference);
-    
+    const filterData = getFilterData();
     let recipeData = null;
 
     try {
-        if (filterUrl.includes('random.php')) {
+        if (filterData.type === 'random') {
             // Case 1: Completely random recipe fetch
-            const response = await fetch(filterUrl);
+            const response = await fetch(filterData.url);
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const data = await response.json();
             
@@ -100,24 +103,40 @@ const fetchRandomRecipe = async () => {
             // Case 2: Filtered recipe fetch (filter.php then lookup.php)
 
             // Step 1: Filter meals by the selected criteria (Category or Area)
-            const filterResponse = await fetch(filterUrl);
+            const filterResponse = await fetch(filterData.url);
             
             if (!filterResponse.ok) throw new Error(`Filter HTTP error! status: ${filterResponse.status}`);
-            const filterData = await filterResponse.json();
+            const filterJson = await filterResponse.json();
 
-            if (!filterData.meals || filterData.meals.length === 0) {
-                // Determine the filter type for the error message
-                const filterType = filterUrl.includes('?c=') ? 'category' : 'cuisine';
-                const filterValue = filterUrl.split('=').pop();
-                displayError(`No recipes found for the selected ${filterType}: ${decodeURIComponent(filterValue)}. Please try a different selection.`);
+            if (!filterJson.meals || filterJson.meals.length === 0) {
+                displayError(`No recipes found for the selected ${filterData.type}: ${filterData.value}. Please try a different selection.`);
                 return;
             }
 
-            // Step 2: Select a random meal ID from the filtered list
-            const mealsList = filterData.meals;
-            const randomIndex = Math.floor(Math.random() * mealsList.length);
-            const mealId = mealsList[randomIndex].idMeal;
+            // Step 2: Select a random, *non-repeated* meal ID
+            const mealsList = filterJson.meals;
+            let mealId = null;
+            let attemptCount = 0;
+            const maxAttempts = 5; // Don't loop forever if the list is tiny and all IDs are in the cache
 
+            while (mealId === null && attemptCount < maxAttempts) {
+                const randomIndex = Math.floor(Math.random() * mealsList.length);
+                const candidateId = mealsList[randomIndex].idMeal;
+
+                if (!viewedMealIds.has(candidateId)) {
+                    mealId = candidateId;
+                }
+                attemptCount++;
+            }
+            
+            // Fallback: If after maxAttempts we can't find a new one, clear the cache and pick one
+            if (mealId === null) {
+                console.warn('Cache full or limited options. Clearing cache to pick a meal.');
+                viewedMealIds.clear();
+                const randomIndex = Math.floor(Math.random() * mealsList.length);
+                mealId = mealsList[randomIndex].idMeal;
+            }
+            
             // Step 3: Lookup full details for the random meal ID
             const lookupUrl = `${BASE_API_URL}lookup.php?i=${mealId}`;
             const lookupResponse = await fetch(lookupUrl);
@@ -127,6 +146,13 @@ const fetchRandomRecipe = async () => {
 
             if (lookupData.meals && lookupData.meals.length > 0) {
                 recipeData = lookupData.meals[0];
+                
+                // Update cache with the new meal ID
+                if (viewedMealIds.size >= MAX_CACHE_SIZE) {
+                    // Simple cache cleanup: remove the oldest entry (first element)
+                    viewedMealIds.delete(viewedMealIds.values().next().value);
+                }
+                viewedMealIds.add(mealId);
             } else {
                 displayError('Could not retrieve full recipe details. Please try again.');
                 return;
@@ -151,7 +177,7 @@ const fetchRandomRecipe = async () => {
     }
 };
 
-// --- UI Utility Functions ---
+// --- UI Utility Functions (unchanged from previous update) ---
 
 /**
  * Updates the HTML elements with the meal data.
@@ -286,8 +312,9 @@ const initializeApp = () => {
 // Add event listeners
 getRecipeBtn.addEventListener('click', fetchRandomRecipe);
 copyBtnEl.addEventListener('click', copyIngredients);
-dietPreferenceEl.addEventListener('change', fetchRandomRecipe); 
-countryPreferenceEl.addEventListener('change', fetchRandomRecipe); // NEW EVENT LISTENER
+// When a filter changes, clear the cache to start a fresh search
+dietPreferenceEl.addEventListener('change', () => { viewedMealIds.clear(); fetchRandomRecipe(); }); 
+countryPreferenceEl.addEventListener('change', () => { viewedMealIds.clear(); fetchRandomRecipe(); }); 
 
 // Run the initialization function
 initializeApp();
