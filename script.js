@@ -15,28 +15,80 @@ const youtubeLinkEl = document.getElementById('youtube-link');
 const copyBtnEl = document.getElementById('copy-btn');
 const messageBox = document.getElementById('message-box');
 const messageText = document.getElementById('message-text');
-// NEW: Reference to the dietary preference dropdown
 const dietPreferenceEl = document.getElementById('diet-preference');
+const countryPreferenceEl = document.getElementById('country-preference'); // NEW ELEMENT
 
 // Store the last fetched meal data
 let currentMealData = null;
 
 /**
- * Fetches a random recipe from the API and updates the UI, now supporting dietary filters.
+ * Fetches the list of all available meal areas (countries/cuisines) and populates the dropdown.
+ */
+const populateCountryDropdown = async () => {
+    try {
+        const response = await fetch(`${BASE_API_URL}list.php?a=list`);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+
+        if (data.meals) {
+            data.meals.forEach(area => {
+                const option = document.createElement('option');
+                option.value = area.strArea;
+                option.textContent = area.strArea;
+                countryPreferenceEl.appendChild(option);
+            });
+        }
+    } catch (error) {
+        console.error('Failed to populate country dropdown:', error);
+        // Display a small message or log the error, but don't halt the app
+    }
+};
+
+/**
+ * Determines the API URL based on user selections.
+ * Note: TheMealDB free API only allows ONE filter (Category OR Area) OR a Random call.
+ * We prioritize the most restrictive filter: Diet Category first, then Country.
+ * If both are set, we currently only use the Diet Category (c=) to ensure the veg/non-veg choice is respected.
+ * If you need both filters, you would need a more complex, multi-step search or a different API.
+ * * @param {string} diet The selected dietary preference ('Any', 'Vegetarian', 'Chicken').
+ * @param {string} country The selected country/area ('Any', 'Canadian', etc.).
+ * @returns {string} The constructed API filter URL.
+ */
+const getFilterUrl = (diet, country) => {
+    const isDietFiltered = (diet !== 'Any');
+    const isCountryFiltered = (country !== 'Any');
+
+    if (isDietFiltered) {
+        // Prioritize Diet filtering as it's the core new feature
+        return `${BASE_API_URL}filter.php?c=${diet}`;
+    } else if (isCountryFiltered) {
+        // Fallback to Country filtering if only country is selected
+        return `${BASE_API_URL}filter.php?a=${country}`;
+    } else {
+        // Default to a completely random meal
+        return `${BASE_API_URL}random.php`;
+    }
+}
+
+
+/**
+ * Fetches a random recipe from the API and updates the UI.
  */
 const fetchRandomRecipe = async () => {
     // Show loading spinner and hide recipe card
     loadingSpinner.classList.remove('hidden');
     recipeCard.classList.add('hidden');
 
-    // Get the selected preference
-    const preference = dietPreferenceEl.value;
+    const dietPreference = dietPreferenceEl.value;
+    const countryPreference = countryPreferenceEl.value;
+    const filterUrl = getFilterUrl(dietPreference, countryPreference);
+    
     let recipeData = null;
 
     try {
-        if (preference === 'random') {
-            // Case 1: Original random recipe fetch (random.php)
-            const response = await fetch(`${BASE_API_URL}random.php`);
+        if (filterUrl.includes('random.php')) {
+            // Case 1: Completely random recipe fetch
+            const response = await fetch(filterUrl);
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const data = await response.json();
             
@@ -47,16 +99,17 @@ const fetchRandomRecipe = async () => {
         } else {
             // Case 2: Filtered recipe fetch (filter.php then lookup.php)
 
-            // Step 1: Filter meals by the selected category (e.g., 'Vegetarian' or 'Chicken')
-            const filterUrl = `${BASE_API_URL}filter.php?c=${preference}`;
+            // Step 1: Filter meals by the selected criteria (Category or Area)
             const filterResponse = await fetch(filterUrl);
             
             if (!filterResponse.ok) throw new Error(`Filter HTTP error! status: ${filterResponse.status}`);
             const filterData = await filterResponse.json();
 
             if (!filterData.meals || filterData.meals.length === 0) {
-                // If filter returns null, display an error
-                displayError(`No ${preference} recipes found. Please try 'Any Recipe'.`);
+                // Determine the filter type for the error message
+                const filterType = filterUrl.includes('?c=') ? 'category' : 'cuisine';
+                const filterValue = filterUrl.split('=').pop();
+                displayError(`No recipes found for the selected ${filterType}: ${decodeURIComponent(filterValue)}. Please try a different selection.`);
                 return;
             }
 
@@ -98,6 +151,8 @@ const fetchRandomRecipe = async () => {
     }
 };
 
+// --- UI Utility Functions ---
+
 /**
  * Updates the HTML elements with the meal data.
  * @param {object} meal The meal object from the API response.
@@ -124,7 +179,7 @@ const updateUI = (meal) => {
             const listItem = document.createElement('li');
             listItem.classList.add('flex', 'items-start');
 
-            // Ingredient image (optional, based on API availability)
+            // Ingredient image (optional)
             const img = document.createElement('img');
             img.src = `${INGREDIENT_IMG_URL}${ingredient.replace(/ /g, '%20')}.png`;
             img.alt = ingredient;
@@ -146,7 +201,6 @@ const updateUI = (meal) => {
     }
 
     // Set instructions
-    // Replaces newlines with paragraph tags for better formatting on the UI
     const instructions = meal.strInstructions ? meal.strInstructions.trim().split('\n').map(p => `<p class="mb-4">${p}</p>`).join('') : '<p>Instructions not available.</p>';
     mealInstructionsEl.innerHTML = instructions;
 
@@ -159,7 +213,6 @@ const updateUI = (meal) => {
     }
 };
 
-
 /**
  * Copies the ingredients list to the clipboard.
  */
@@ -169,24 +222,19 @@ const copyIngredients = () => {
     let ingredientsText = '--- Ingredients List ---\n';
     const ingredientsItems = ingredientsListEl.getElementsByTagName('li');
     for (let i = 0; i < ingredientsItems.length; i++) {
-        // Get the text content, excluding the image alt text
         const textContent = ingredientsItems[i].textContent.trim();
         ingredientsText += `- ${textContent}\n`;
     }
 
-    // Create a temporary textarea to hold the text
     const tempTextArea = document.createElement('textarea');
     tempTextArea.value = ingredientsText;
     document.body.appendChild(tempTextArea);
 
-    // Select and copy the text
     tempTextArea.select();
     document.execCommand('copy');
     
-    // Remove the temporary textarea
     document.body.removeChild(tempTextArea);
 
-    // Show a success message
     showMessage('Ingredients copied to clipboard!');
 };
 
@@ -198,18 +246,16 @@ const copyIngredients = () => {
 const showMessage = (message) => {
     messageText.textContent = message;
     messageBox.classList.remove('hidden');
-    messageBox.classList.add('animate-fadeIn'); // Assuming you have a CSS fade-in animation
+    messageBox.classList.add('animate-fadeIn');
 
-    // Hide after 3 seconds
     setTimeout(() => {
         messageBox.classList.remove('animate-fadeIn');
-        messageBox.classList.add('animate-fadeOut'); // Assuming you have a CSS fade-out animation
+        messageBox.classList.add('animate-fadeOut');
         
-        // Wait for fade-out animation to finish before hiding
         setTimeout(() => {
             messageBox.classList.remove('animate-fadeOut');
             messageBox.classList.add('hidden');
-        }, 500); // Wait for animation duration
+        }, 500);
     }, 3000);
 };
 
@@ -228,11 +274,20 @@ const displayError = (message) => {
 };
 
 
+// --- Initialization ---
+
+// Setup function to run on page load
+const initializeApp = () => {
+    populateCountryDropdown();
+    // Initial fetch
+    fetchRandomRecipe();
+};
+
 // Add event listeners
 getRecipeBtn.addEventListener('click', fetchRandomRecipe);
 copyBtnEl.addEventListener('click', copyIngredients);
-// We also want to fetch a new recipe whenever the user changes the diet preference
 dietPreferenceEl.addEventListener('change', fetchRandomRecipe); 
+countryPreferenceEl.addEventListener('change', fetchRandomRecipe); // NEW EVENT LISTENER
 
-// Fetch a recipe on page load
-fetchRandomRecipe();
+// Run the initialization function
+initializeApp();
